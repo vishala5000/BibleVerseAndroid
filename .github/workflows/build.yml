@@ -2,12 +2,15 @@ name: Build APK
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
 
 jobs:
+
   build:
+
     runs-on: ubuntu-latest
 
     permissions:
@@ -18,238 +21,282 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android packages
-        run: |
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-      # ============================================================
-      # DOWNLOAD PIPER
-      # ============================================================
-
-      - name: Download Piper Android package
+      - name: Install Android SDK / NDK / CMake
         shell: bash
         run: |
+
           set -euxo pipefail
 
-          rm -rf /tmp/piper-deb
-          rm -rf /tmp/piper-extract
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.31.6"
 
-          mkdir -p /tmp/piper-deb
-          mkdir -p /tmp/piper-extract
 
-          gh release download v1.2-android-termux \
-            --repo gyroing/piper-tts-for-termux \
-            --pattern 'piper-tts-cli-1.2.deb' \
-            --dir /tmp/piper-deb
+      - name: Download Piper source and ONNX Runtime
+        shell: bash
+        run: |
 
-          deb=$(find /tmp/piper-deb -type f -name '*.deb' | head -n 1)
+          set -euxo pipefail
 
-          test -n "$deb"
+          PIPER_VERSION="v1.4.2"
+          ORT_VERSION="1.22.0"
 
-          echo "Downloaded package:"
-          echo "$deb"
+          CPP="app/src/main/cpp"
 
-          dpkg-deb -x "$deb" /tmp/piper-extract
+          rm -rf "$CPP/piper"
+          rm -rf "$CPP/onnxruntime"
 
-          echo ""
-          echo "=============================="
-          echo "PACKAGE CONTENTS"
-          echo "=============================="
+          mkdir -p "$CPP"
 
-          find /tmp/piper-extract -type f | sort
 
-          echo ""
-          echo "=============================="
-          echo "EXECUTABLE FILES"
-          echo "=============================="
+          echo "================================"
+          echo "CLONING PIPER"
+          echo "================================"
 
-          find /tmp/piper-extract -type f -perm -111 -print || true
+          git clone \
+            --depth 1 \
+            --branch "$PIPER_VERSION" \
+            --recurse-submodules \
+            https://github.com/OHF-Voice/piper1-gpl.git \
+            "$CPP/piper"
 
-          echo ""
-          echo "=============================="
-          echo "PIPER SEARCH"
-          echo "=============================="
 
-          find /tmp/piper-extract -type f \
-            \( \
-              -name 'piper' \
-              -o -name 'piper-tts' \
-              -o -name 'piper-tts-cli' \
-            \) \
-            -print || true
+          echo "================================"
+          echo "DOWNLOADING ANDROID ONNX RUNTIME"
+          echo "================================"
 
-          # --------------------------------------------------------
-          # Find Piper executable.
-          # Do NOT assume it is located at /usr/bin/piper.
-          # --------------------------------------------------------
+          mkdir -p /tmp/ort
 
-          piper=$(find /tmp/piper-extract -type f \
-            \( \
-              -name 'piper' \
-              -o -name 'piper-tts' \
-              -o -name 'piper-tts-cli' \
-            \) \
-            -print \
+          curl \
+            -L \
+            --fail \
+            --retry 3 \
+            -o /tmp/ort/onnxruntime.aar \
+            "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar"
+
+
+          unzip \
+            -q \
+            -o \
+            /tmp/ort/onnxruntime.aar \
+            -d "$CPP/onnxruntime"
+
+
+          mkdir -p \
+            "$CPP/onnxruntime/lib"
+
+
+          cp \
+            "$CPP/onnxruntime/jni/arm64-v8a/libonnxruntime.so" \
+            "$CPP/onnxruntime/lib/libonnxruntime.so"
+
+
+          test -f \
+            "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
+
+
+          test -f \
+            "$CPP/onnxruntime/lib/libonnxruntime.so"
+
+
+          echo "ONNX Runtime prepared."
+
+
+      - name: Build Piper native library
+        shell: bash
+        run: |
+
+          set -euxo pipefail
+
+          CPP="$GITHUB_WORKSPACE/app/src/main/cpp"
+
+          NDK="$ANDROID_NDK_ROOT"
+
+
+          rm -rf \
+            /tmp/piper-native-build
+
+
+          echo "================================"
+          echo "CONFIGURING PIPER"
+          echo "================================"
+
+
+          cmake \
+            -S "$CPP/piper/libpiper" \
+            -B /tmp/piper-native-build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DONNXRUNTIME_DIR="$CPP/onnxruntime" \
+            -DPIPER_BUILD_TESTS=OFF
+
+
+          echo "================================"
+          echo "BUILDING PIPER"
+          echo "================================"
+
+
+          cmake \
+            --build /tmp/piper-native-build \
+            --config Release \
+            --parallel 2
+
+
+          echo "================================"
+          echo "CHECKING PIPER LIBRARY"
+          echo "================================"
+
+
+          find \
+            /tmp/piper-native-build \
+            -name "libpiper.so" \
+            -print
+
+
+          PIPER_SO=$(find \
+            /tmp/piper-native-build \
+            -name "libpiper.so" \
             | head -n 1)
 
-          if [ -z "$piper" ]; then
-            echo ""
-            echo "ERROR: Piper executable was not found."
-            echo ""
-            echo "Complete package contents:"
-            find /tmp/piper-extract -type f | sort
-            exit 1
-          fi
 
-          echo ""
-          echo "Piper executable found:"
-          echo "$piper"
+          test -n "$PIPER_SO"
 
-          # ========================================================
-          # CREATE ASSET DIRECTORIES
-          # ========================================================
 
-          mkdir -p app/src/main/assets/piper/bin
-          mkdir -p app/src/main/assets/piper/lib
-          mkdir -p app/src/main/assets/piper/espeak-ng-data
+          echo "Piper library:"
+          echo "$PIPER_SO"
 
-          # ========================================================
-          # COPY PIPER
-          # ========================================================
 
-          cp -L "$piper" \
-            app/src/main/assets/piper/bin/piper
+          mkdir -p \
+            "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
 
-          chmod +x \
-            app/src/main/assets/piper/bin/piper
 
-          # ========================================================
-          # COPY NATIVE LIBRARIES
-          # ========================================================
+          cp \
+            "$PIPER_SO" \
+            "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libpiper.so"
 
-          if [ -d "/tmp/piper-extract/usr/lib" ]; then
 
-            find /tmp/piper-extract/usr/lib \
-              -type f \
-              \( \
-                -name '*.so' \
-                -o -name '*.so.*' \
-              \) \
-              -exec cp -L {} app/src/main/assets/piper/lib/ \;
+          cp \
+            "$CPP/onnxruntime/lib/libonnxruntime.so" \
+            "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libonnxruntime.so"
 
-          fi
 
-          # Some packages may place libraries elsewhere.
-          find /tmp/piper-extract \
-            -type f \
-            \( \
-              -name '*.so' \
-              -o -name '*.so.*' \
-            \) \
-            -exec cp -L {} app/src/main/assets/piper/lib/ \; \
-            || true
-
-          # ========================================================
-          # COPY ESPEAK DATA
-          # ========================================================
-
-          if [ -d "/tmp/piper-extract/usr/share/espeak-ng-data" ]; then
-
-            cp -a \
-              /tmp/piper-extract/usr/share/espeak-ng-data/. \
-              app/src/main/assets/piper/espeak-ng-data/
-
-          fi
-
-          if [ -d "/tmp/piper-extract/data/data/com.termux/files/usr/share/espeak-ng-data" ]; then
-
-            cp -a \
-              /tmp/piper-extract/data/data/com.termux/files/usr/share/espeak-ng-data/. \
-              app/src/main/assets/piper/espeak-ng-data/
-
-          fi
-
-          # Search for espeak-ng-data anywhere else in package.
-          if [ ! -f "app/src/main/assets/piper/espeak-ng-data/phonindex" ]; then
-
-            espeak_dir=$(find /tmp/piper-extract \
-              -type d \
-              -name 'espeak-ng-data' \
-              | head -n 1 || true)
-
-            if [ -n "$espeak_dir" ]; then
-
-              cp -a \
-                "$espeak_dir/." \
-                app/src/main/assets/piper/espeak-ng-data/
-
-            fi
-
-          fi
-
-          # ========================================================
-          # VERIFY
-          # ========================================================
-
-          echo ""
-          echo "=============================="
-          echo "FINAL PIPER FILES"
-          echo "=============================="
-
-          find app/src/main/assets/piper -type f | sort
-
-          echo ""
-          echo "Piper binary:"
-
-          ls -lh \
-            app/src/main/assets/piper/bin/piper
-
-          test -x \
-            app/src/main/assets/piper/bin/piper
-
-          # espeak directory must exist
-          test -d \
-            app/src/main/assets/piper/espeak-ng-data
-
-      # ============================================================
-      # VERIFY APP ASSETS
-      # ============================================================
-
-      - name: Validate bundled assets
+      - name: Collect eSpeak NG data
         shell: bash
         run: |
+
           set -euxo pipefail
 
-          test -f app/src/main/assets/quotes.txt
+          DATA_DIR=$(find \
+            /tmp/piper-native-build \
+            -type d \
+            -name "espeak-ng-data" \
+            | head -n 1)
 
-          test -f app/src/main/assets/font.ttf || {
-            echo "ERROR: font.ttf is missing"
+
+          if [ -z "$DATA_DIR" ]; then
+
+            echo "ERROR: espeak-ng-data was not found."
+
+            find \
+              /tmp/piper-native-build \
+              -maxdepth 5 \
+              -type d \
+              | sort
+
             exit 1
-          }
 
-          test -f app/src/main/assets/bg.mp3 || {
-            echo "ERROR: bg.mp3 is missing"
-            exit 1
-          }
+          fi
 
-          echo "All bundled assets are present."
 
-      # ============================================================
-      # BUILD APK
-      # ============================================================
+          echo "eSpeak data:"
+          echo "$DATA_DIR"
+
+
+          rm -rf \
+            app/src/main/assets/piper/espeak-ng-data
+
+
+          mkdir -p \
+            app/src/main/assets/piper/espeak-ng-data
+
+
+          cp -a \
+            "$DATA_DIR/." \
+            app/src/main/assets/piper/espeak-ng-data/
+
+
+          test -f \
+            app/src/main/assets/piper/espeak-ng-data/phonindex
+
+
+      - name: Validate project
+        shell: bash
+        run: |
+
+          set -euxo pipefail
+
+          test -f \
+            app/src/main/assets/quotes.txt
+
+          test -f \
+            app/src/main/assets/font.ttf
+
+          test -f \
+            app/src/main/assets/bg.mp3
+
+          test -f \
+            app/src/main/assets/piper/espeak-ng-data/phonindex
+
+          test -f \
+            app/src/main/jniLibs/arm64-v8a/libpiper.so
+
+          test -f \
+            app/src/main/jniLibs/arm64-v8a/libonnxruntime.so
+
+
+          echo ""
+          echo "================================"
+          echo "NATIVE LIBRARIES"
+          echo "================================"
+
+          ls -lh \
+            app/src/main/jniLibs/arm64-v8a/
+
+
+          echo ""
+          echo "================================"
+          echo "ASSETS"
+          echo "================================"
+
+          find \
+            app/src/main/assets \
+            -maxdepth 3 \
+            -type f \
+            -printf "%p %s bytes\n" \
+            | sort
+
 
       - name: Build debug APK
         shell: bash
         run: |
+
           set -euxo pipefail
 
           chmod +x gradlew
@@ -259,13 +306,27 @@ jobs:
             --stacktrace \
             --no-daemon
 
-      # ============================================================
-      # UPLOAD APK
-      # ============================================================
+
+      - name: Verify APK
+        shell: bash
+        run: |
+
+          set -euxo pipefail
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK"
+
+          ls -lh "$APK"
+
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
+
         with:
+
           name: BibleVerseVideoGenerator-debug
+
           path: app/build/outputs/apk/debug/app-debug.apk
+
           if-no-files-found: error
