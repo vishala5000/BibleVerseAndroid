@@ -29,7 +29,7 @@ jobs:
 
       - name: Install Android packages
         run: |
-          sdkmanager "platforms;android-35" "build-tools;36.0.0"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       # ============================================================
       # DOWNLOAD PIPER
