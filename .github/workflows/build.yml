@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -21,7 +22,10 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android tools
+        shell: bash
         run: |
+          set -euxo pipefail
+
           yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager \
@@ -56,7 +60,11 @@ jobs:
             https://github.com/OHF-Voice/piper1-gpl.git \
             "$CPP/piper"
 
-          test -f "$CPP/piper/libpiper/CMakeLists.txt"
+          test -f \
+            "$CPP/piper/libpiper/CMakeLists.txt"
+
+          test -f \
+            "$CPP/piper/libpiper/include/piper.h"
 
           echo "Piper source downloaded."
 
@@ -75,12 +83,15 @@ jobs:
             -o /tmp/ort/onnxruntime.aar \
             "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar"
 
-          test -s /tmp/ort/onnxruntime.aar
+          test -s \
+            /tmp/ort/onnxruntime.aar
 
           echo "AAR downloaded:"
-          ls -lh /tmp/ort/onnxruntime.aar
+          ls -lh \
+            /tmp/ort/onnxruntime.aar
 
-          mkdir -p "$CPP/onnxruntime"
+          mkdir -p \
+            "$CPP/onnxruntime"
 
           unzip \
             -q \
@@ -89,20 +100,18 @@ jobs:
             -d "$CPP/onnxruntime"
 
           echo "================================"
-          echo "CHECKING ONNX RUNTIME CONTENT"
+          echo "CHECKING ONNX RUNTIME AAR"
           echo "================================"
 
-          find "$CPP/onnxruntime" \
-            -maxdepth 5 \
-            -type f \
-            -print \
-            | sort
-
           test -f \
-            "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
+            "$CPP/onnxruntime/headers/onnxruntime_cxx_api.h"
 
           test -f \
             "$CPP/onnxruntime/jni/arm64-v8a/libonnxruntime.so"
+
+          echo "ONNX headers found."
+
+          echo "ONNX ARM64 library found."
 
           mkdir -p \
             "$CPP/onnxruntime/lib"
@@ -113,6 +122,21 @@ jobs:
 
           test -f \
             "$CPP/onnxruntime/lib/libonnxruntime.so"
+
+          # Piper's CMake expects:
+          # onnxruntime/include
+          # onnxruntime/lib
+          #
+          # Android AAR provides:
+          # onnxruntime/headers
+          # onnxruntime/lib
+
+          ln -s \
+            "headers" \
+            "$CPP/onnxruntime/include"
+
+          test -f \
+            "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
 
           echo "================================"
           echo "ONNX RUNTIME READY"
@@ -145,15 +169,23 @@ jobs:
           echo "APK FILES"
           echo "================================"
 
-          find app/build/outputs/apk \
+          find \
+            app/build/outputs/apk \
             -type f \
             -name "*.apk" \
             -print
 
-          test -n "$(find app/build/outputs/apk \
+          APK="$(find \
+            app/build/outputs/apk \
             -type f \
             -name "*.apk" \
-            -print -quit)"
+            -print \
+            -quit)"
+
+          test -n "$APK"
+
+          echo "APK:"
+          echo "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
