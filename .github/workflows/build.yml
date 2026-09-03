@@ -4,13 +4,24 @@ on:
   workflow_dispatch:
 
 jobs:
+
   build:
+
     runs-on: ubuntu-latest
 
     steps:
 
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ======================================================
+      # JAVA
+      # ======================================================
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -18,12 +29,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+
+      # ======================================================
+      # ANDROID SDK
+      # ======================================================
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+
+
+      # ======================================================
+      # ANDROID TOOLS
+      # ======================================================
 
       - name: Install Android tools
         shell: bash
         run: |
+
           set -euxo pipefail
 
           yes | sdkmanager --licenses >/dev/null || true
@@ -35,13 +57,20 @@ jobs:
             "ndk;28.0.13004108" \
             "cmake;3.31.6"
 
+
+      # ======================================================
+      # DOWNLOAD PIPER + ONNX RUNTIME
+      # ======================================================
+
       - name: Prepare Piper and ONNX Runtime
         shell: bash
         run: |
+
           set -euxo pipefail
 
           PIPER_VERSION="v1.4.2"
           ORT_VERSION="1.22.0"
+
           CPP="app/src/main/cpp"
 
           rm -rf "$CPP/piper"
@@ -49,9 +78,14 @@ jobs:
 
           mkdir -p "$CPP"
 
-          echo "================================"
+
+          # --------------------------------------------------
+          # PIPER
+          # --------------------------------------------------
+
+          echo "=============================================="
           echo "CLONING PIPER"
-          echo "================================"
+          echo "=============================================="
 
           git clone \
             --depth 1 \
@@ -60,20 +94,31 @@ jobs:
             https://github.com/OHF-Voice/piper1-gpl.git \
             "$CPP/piper"
 
+
           test -f \
             "$CPP/piper/libpiper/CMakeLists.txt"
+
 
           test -f \
             "$CPP/piper/libpiper/include/piper.h"
 
+
           echo "Piper source downloaded."
 
-          echo "================================"
+
+          # --------------------------------------------------
+          # ONNX RUNTIME
+          # --------------------------------------------------
+
+          echo "=============================================="
           echo "DOWNLOADING ANDROID ONNX RUNTIME"
-          echo "================================"
+          echo "=============================================="
+
 
           rm -rf /tmp/ort
+
           mkdir -p /tmp/ort
+
 
           curl \
             -L \
@@ -83,15 +128,24 @@ jobs:
             -o /tmp/ort/onnxruntime.aar \
             "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar"
 
+
           test -s \
             /tmp/ort/onnxruntime.aar
 
+
           echo "AAR downloaded:"
+
           ls -lh \
             /tmp/ort/onnxruntime.aar
 
+
+          # --------------------------------------------------
+          # EXTRACT AAR
+          # --------------------------------------------------
+
           mkdir -p \
             "$CPP/onnxruntime"
+
 
           unzip \
             -q \
@@ -99,75 +153,363 @@ jobs:
             /tmp/ort/onnxruntime.aar \
             -d "$CPP/onnxruntime"
 
-          echo "================================"
-          echo "CHECKING ONNX RUNTIME AAR"
-          echo "================================"
+
+          # --------------------------------------------------
+          # VERIFY AAR
+          # --------------------------------------------------
+
+          echo "=============================================="
+          echo "CHECKING ONNX RUNTIME"
+          echo "=============================================="
+
 
           test -f \
             "$CPP/onnxruntime/headers/onnxruntime_cxx_api.h"
 
+
           test -f \
             "$CPP/onnxruntime/jni/arm64-v8a/libonnxruntime.so"
+
 
           echo "ONNX headers found."
 
           echo "ONNX ARM64 library found."
 
+
+          # --------------------------------------------------
+          # CREATE LIB DIRECTORY
+          # --------------------------------------------------
+
           mkdir -p \
             "$CPP/onnxruntime/lib"
+
 
           cp \
             "$CPP/onnxruntime/jni/arm64-v8a/libonnxruntime.so" \
             "$CPP/onnxruntime/lib/libonnxruntime.so"
 
+
           test -f \
             "$CPP/onnxruntime/lib/libonnxruntime.so"
 
-          # Piper's CMake expects:
-          # onnxruntime/include
-          # onnxruntime/lib
-          #
-          # Android AAR provides:
-          # onnxruntime/headers
-          # onnxruntime/lib
+
+          # --------------------------------------------------
+          # CREATE COMPATIBILITY SYMLINK
+          # --------------------------------------------------
 
           ln -s \
             "headers" \
             "$CPP/onnxruntime/include"
 
+
           test -f \
             "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
 
-          echo "================================"
+
+          echo "=============================================="
           echo "ONNX RUNTIME READY"
-          echo "================================"
+          echo "=============================================="
+
 
           ls -lh \
             "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
+
 
           ls -lh \
             "$CPP/onnxruntime/lib/libonnxruntime.so"
 
+
+      # ======================================================
+      # PATCH PIPER
+      #
+      # We only need libpiper + eSpeak.
+      # Do NOT build the Piper command-line executable.
+      # ======================================================
+
+      - name: Patch Piper for Android
+        shell: bash
+        run: |
+
+          set -euxo pipefail
+
+          PIPER_CMAKE="app/src/main/cpp/piper/libpiper/CMakeLists.txt"
+
+
+          echo "=============================================="
+          echo "PIPER CMAKE BEFORE PATCH"
+          echo "=============================================="
+
+
+          cat "$PIPER_CMAKE"
+
+
+          # --------------------------------------------------
+          # Remove Piper CLI target.
+          #
+          # Android application uses JNI directly.
+          # --------------------------------------------------
+
+          python3 - <<'PY'
+
+          from pathlib import Path
+
+          path = Path(
+              "app/src/main/cpp/piper/libpiper/CMakeLists.txt"
+          )
+
+          text = path.read_text()
+
+
+          old = 'add_subdirectory(src/main)'
+
+
+          if old in text:
+
+              text = text.replace(
+                  old,
+                  '# Android build: CLI disabled; JNI uses libpiper.'
+              )
+
+
+          path.write_text(text)
+
+          PY
+
+
+          echo "=============================================="
+          echo "PIPER CMAKE AFTER PATCH"
+          echo "=============================================="
+
+
+          cat "$PIPER_CMAKE"
+
+
+          # --------------------------------------------------
+          # Confirm CLI was removed
+          # --------------------------------------------------
+
+          if grep -q \
+            "add_subdirectory(src/main)" \
+            "$PIPER_CMAKE"; then
+
+              echo "ERROR: Piper CLI was not disabled."
+
+              exit 1
+
+          fi
+
+
+          echo "Piper CLI successfully disabled."
+
+
+      # ======================================================
+      # PREPARE ESPEAK DATA
+      # ======================================================
+
+      - name: Prepare Piper eSpeak data
+        shell: bash
+        run: |
+
+          set -euxo pipefail
+
+          CPP="app/src/main/cpp"
+
+          PIPER="$CPP/piper"
+
+          NDK="$ANDROID_NDK_ROOT"
+
+          BUILD_DIR="/tmp/piper-android-build"
+
+          INSTALL_DIR="/tmp/piper-android-install"
+
+
+          rm -rf "$BUILD_DIR"
+
+          rm -rf "$INSTALL_DIR"
+
+
+          mkdir -p "$BUILD_DIR"
+
+          mkdir -p "$INSTALL_DIR"
+
+
+          echo "=============================================="
+          echo "CONFIGURING PIPER"
+          echo "=============================================="
+
+
+          cmake \
+            -S "$PIPER" \
+            -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_DIR="$PWD/$CPP/onnxruntime" \
+            -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR"
+
+
+          echo "=============================================="
+          echo "BUILDING PIPER"
+          echo "=============================================="
+
+
+          cmake \
+            --build "$BUILD_DIR" \
+            --parallel
+
+
+          echo "=============================================="
+          echo "INSTALLING PIPER"
+          echo "=============================================="
+
+
+          cmake \
+            --install "$BUILD_DIR"
+
+
+          # --------------------------------------------------
+          # Locate espeak-ng-data
+          # --------------------------------------------------
+
+          echo "=============================================="
+          echo "SEARCHING FOR ESPEAK DATA"
+          echo "=============================================="
+
+
+          find \
+            "$INSTALL_DIR" \
+            -type d \
+            -name "espeak-ng-data" \
+            -print
+
+
+          ESPEAK_DATA="$(
+            find \
+              "$INSTALL_DIR" \
+              -type d \
+              -name "espeak-ng-data" \
+              -print \
+              -quit
+          )"
+
+
+          if [ -z "$ESPEAK_DATA" ]; then
+
+            echo "ERROR: espeak-ng-data was not installed."
+
+            exit 1
+
+          fi
+
+
+          echo "Found: $ESPEAK_DATA"
+
+
+          # --------------------------------------------------
+          # Copy to Android assets
+          # --------------------------------------------------
+
+          DEST="app/src/main/assets/piper/espeak-ng-data"
+
+
+          rm -rf "$DEST"
+
+          mkdir -p "$DEST"
+
+
+          cp -a \
+            "$ESPEAK_DATA/." \
+            "$DEST/"
+
+
+          test -d "$DEST"
+
+          test -n "$(find "$DEST" -type f -print -quit)"
+
+
+          echo "=============================================="
+          echo "ESPEAK DATA READY"
+          echo "=============================================="
+
+
+          du -sh "$DEST"
+
+
+      # ======================================================
+      # VERIFY NATIVE FILES
+      # ======================================================
+
+      - name: Verify native build files
+        shell: bash
+        run: |
+
+          set -euxo pipefail
+
+
+          echo "=============================================="
+          echo "VERIFYING FILES"
+          echo "=============================================="
+
+
+          test -f \
+            app/src/main/cpp/piper/libpiper/include/piper.h
+
+
+          test -f \
+            app/src/main/cpp/onnxruntime/headers/onnxruntime_cxx_api.h
+
+
+          test -f \
+            app/src/main/cpp/onnxruntime/lib/libonnxruntime.so
+
+
+          test -d \
+            app/src/main/assets/piper/espeak-ng-data
+
+
+          test -f \
+            app/src/main/cpp/native_piper.cpp
+
+
+          echo "All required files exist."
+
+
+      # ======================================================
+      # GRADLE BUILD
+      # ======================================================
+
       - name: Build Android APK
         shell: bash
         run: |
+
           set -euxo pipefail
 
           chmod +x ./gradlew
+
 
           ./gradlew \
             --no-daemon \
             --stacktrace \
             assembleRelease
 
+
+      # ======================================================
+      # CHECK APK
+      # ======================================================
+
       - name: Check APK
         shell: bash
         run: |
+
           set -euxo pipefail
 
-          echo "================================"
+
+          echo "=============================================="
           echo "APK FILES"
-          echo "================================"
+          echo "=============================================="
+
 
           find \
             app/build/outputs/apk \
@@ -175,21 +517,39 @@ jobs:
             -name "*.apk" \
             -print
 
-          APK="$(find \
-            app/build/outputs/apk \
-            -type f \
-            -name "*.apk" \
-            -print \
-            -quit)"
+
+          APK="$(
+            find \
+              app/build/outputs/apk \
+              -type f \
+              -name "*.apk" \
+              -print \
+              -quit
+          )"
+
 
           test -n "$APK"
 
-          echo "APK:"
-          echo "$APK"
+
+          echo "=============================================="
+          echo "APK FOUND"
+          echo "=============================================="
+
+
+          ls -lh "$APK"
+
+
+      # ======================================================
+      # UPLOAD APK
+      # ======================================================
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
+
         with:
           name: BibleVerse-APK
-          path: app/build/outputs/apk/release/*.apk
+
+          path:
+            app/build/outputs/apk/release/*.apk
+
           if-no-files-found: error
