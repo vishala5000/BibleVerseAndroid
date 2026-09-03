@@ -11,24 +11,34 @@ set(PIPER_SOURCE_DIR
 set(ONNXRUNTIME_DIR
         "${CMAKE_CURRENT_LIST_DIR}/onnxruntime")
 
-if(NOT EXISTS
-        "${PIPER_SOURCE_DIR}/libpiper/CMakeLists.txt")
-    message(FATAL_ERROR
-            "Piper source not found.")
-endif()
+# Android ONNX Runtime AAR uses "headers", not "include".
+set(ONNXRUNTIME_INCLUDE_DIR
+        "${ONNXRUNTIME_DIR}/headers")
 
-if(NOT EXISTS
-        "${ONNXRUNTIME_DIR}/include/onnxruntime_cxx_api.h")
-    message(FATAL_ERROR
-            "ONNX Runtime headers not found.")
-endif()
-
-if(NOT EXISTS
+set(ONNXRUNTIME_LIBRARY
         "${ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+
+if(NOT EXISTS "${PIPER_SOURCE_DIR}/libpiper/CMakeLists.txt")
     message(FATAL_ERROR
-            "Android ONNX Runtime library not found.")
+            "Piper source not found: ${PIPER_SOURCE_DIR}")
 endif()
 
+if(NOT EXISTS "${PIPER_SOURCE_DIR}/libpiper/include/piper.h")
+    message(FATAL_ERROR
+            "Piper header not found.")
+endif()
+
+if(NOT EXISTS "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h")
+    message(FATAL_ERROR
+            "ONNX Runtime headers not found: ${ONNXRUNTIME_INCLUDE_DIR}")
+endif()
+
+if(NOT EXISTS "${ONNXRUNTIME_LIBRARY}")
+    message(FATAL_ERROR
+            "ONNX Runtime library not found: ${ONNXRUNTIME_LIBRARY}")
+endif()
+
+# Tell Piper's CMake where our Android ONNX Runtime is.
 set(
         ONNXRUNTIME_DIR
         "${ONNXRUNTIME_DIR}"
@@ -36,6 +46,26 @@ set(
         "Android ONNX Runtime directory"
         FORCE
 )
+
+# Piper's CMake expects:
+#   ${ONNXRUNTIME_DIR}/include
+#   ${ONNXRUNTIME_DIR}/lib
+#
+# Create a compatibility symlink because the Android AAR
+# extracts headers into "headers".
+if(NOT EXISTS "${ONNXRUNTIME_DIR}/include")
+    execute_process(
+            COMMAND
+            ${CMAKE_COMMAND} -E create_symlink
+            "${ONNXRUNTIME_INCLUDE_DIR}"
+            "${ONNXRUNTIME_DIR}/include"
+    )
+endif()
+
+if(NOT EXISTS "${ONNXRUNTIME_DIR}/include/onnxruntime_cxx_api.h")
+    message(FATAL_ERROR
+            "Could not create ONNX Runtime include compatibility path.")
+endif()
 
 add_subdirectory(
         "${PIPER_SOURCE_DIR}/libpiper"
@@ -54,7 +84,7 @@ target_include_directories(
 
         "${PIPER_SOURCE_DIR}/libpiper/include"
 
-        "${ONNXRUNTIME_DIR}/include"
+        "${ONNXRUNTIME_INCLUDE_DIR}"
 )
 
 target_link_directories(
