@@ -1,4 +1,6 @@
-plugins { id("com.android.application") }
+plugins {
+    id("com.android.application")
+}
 
 android {
     namespace = "com.example.bibleverse"
@@ -10,16 +12,42 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-        ndk { abiFilters += "arm64-v8a" }
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
     }
 
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+        }
     }
 
     packaging {
-        jniLibs.useLegacyPackaging = true
-        resources.excludes += setOf("META-INF/LICENSE*", "META-INF/NOTICE*")
+        jniLibs {
+            useLegacyPackaging = true
+        }
+
+        resources {
+            excludes += setOf(
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*"
+            )
+        }
     }
 }
 
@@ -27,5 +55,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.google.android.material:material:1.13.0")
-    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.7")
+
+    implementation(
+        "dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.7"
+    )
 }
