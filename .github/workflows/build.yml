@@ -3,15 +3,18 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -25,52 +28,244 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android packages
-        run: sdkmanager "platforms;android-35" "build-tools;36.0.0"
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;36.0.0"
 
-      - name: Download Piper Android CLI
+      # ============================================================
+      # DOWNLOAD PIPER
+      # ============================================================
+
+      - name: Download Piper Android package
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p /tmp/piper-deb /tmp/piper-extract
+
+          rm -rf /tmp/piper-deb
+          rm -rf /tmp/piper-extract
+
+          mkdir -p /tmp/piper-deb
+          mkdir -p /tmp/piper-extract
+
           gh release download v1.2-android-termux \
             --repo gyroing/piper-tts-for-termux \
-            --pattern '*.deb' \
+            --pattern 'piper-tts-cli-1.2.deb' \
             --dir /tmp/piper-deb
-          deb=$(find /tmp/piper-deb -name '*.deb' | head -n1)
+
+          deb=$(find /tmp/piper-deb -type f -name '*.deb' | head -n 1)
+
           test -n "$deb"
+
+          echo "Downloaded package:"
+          echo "$deb"
+
           dpkg-deb -x "$deb" /tmp/piper-extract
 
-          piper=$(find /tmp/piper-extract -type f -name piper -perm -111 | head -n1)
-          test -n "$piper"
-          mkdir -p app/src/main/assets/piper/bin app/src/main/assets/piper/lib app/src/main/assets/piper/espeak-ng-data
-          cp "$piper" app/src/main/assets/piper/bin/piper
+          echo ""
+          echo "=============================="
+          echo "PACKAGE CONTENTS"
+          echo "=============================="
 
-          # Copy the runtime libraries shipped with the package.
-          find /tmp/piper-extract/usr/lib -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -L {} app/src/main/assets/piper/lib/ \; || true
+          find /tmp/piper-extract -type f | sort
 
-          # Copy eSpeak data if the package contains it.
-          if [ -d /tmp/piper-extract/usr/share/espeak-ng-data ]; then
-            cp -a /tmp/piper-extract/usr/share/espeak-ng-data/. app/src/main/assets/piper/espeak-ng-data/
-          elif [ -d /tmp/piper-extract/data/data/com.termux/files/usr/share/espeak-ng-data ]; then
-            cp -a /tmp/piper-extract/data/data/com.termux/files/usr/share/espeak-ng-data/. app/src/main/assets/piper/espeak-ng-data/
+          echo ""
+          echo "=============================="
+          echo "EXECUTABLE FILES"
+          echo "=============================="
+
+          find /tmp/piper-extract -type f -perm -111 -print || true
+
+          echo ""
+          echo "=============================="
+          echo "PIPER SEARCH"
+          echo "=============================="
+
+          find /tmp/piper-extract -type f \
+            \( \
+              -name 'piper' \
+              -o -name 'piper-tts' \
+              -o -name 'piper-tts-cli' \
+            \) \
+            -print || true
+
+          # --------------------------------------------------------
+          # Find Piper executable.
+          # Do NOT assume it is located at /usr/bin/piper.
+          # --------------------------------------------------------
+
+          piper=$(find /tmp/piper-extract -type f \
+            \( \
+              -name 'piper' \
+              -o -name 'piper-tts' \
+              -o -name 'piper-tts-cli' \
+            \) \
+            -print \
+            | head -n 1)
+
+          if [ -z "$piper" ]; then
+            echo ""
+            echo "ERROR: Piper executable was not found."
+            echo ""
+            echo "Complete package contents:"
+            find /tmp/piper-extract -type f | sort
+            exit 1
           fi
 
-          chmod +x app/src/main/assets/piper/bin/piper
-          test -d app/src/main/assets/piper/espeak-ng-data
+          echo ""
+          echo "Piper executable found:"
+          echo "$piper"
+
+          # ========================================================
+          # CREATE ASSET DIRECTORIES
+          # ========================================================
+
+          mkdir -p app/src/main/assets/piper/bin
+          mkdir -p app/src/main/assets/piper/lib
+          mkdir -p app/src/main/assets/piper/espeak-ng-data
+
+          # ========================================================
+          # COPY PIPER
+          # ========================================================
+
+          cp -L "$piper" \
+            app/src/main/assets/piper/bin/piper
+
+          chmod +x \
+            app/src/main/assets/piper/bin/piper
+
+          # ========================================================
+          # COPY NATIVE LIBRARIES
+          # ========================================================
+
+          if [ -d "/tmp/piper-extract/usr/lib" ]; then
+
+            find /tmp/piper-extract/usr/lib \
+              -type f \
+              \( \
+                -name '*.so' \
+                -o -name '*.so.*' \
+              \) \
+              -exec cp -L {} app/src/main/assets/piper/lib/ \;
+
+          fi
+
+          # Some packages may place libraries elsewhere.
+          find /tmp/piper-extract \
+            -type f \
+            \( \
+              -name '*.so' \
+              -o -name '*.so.*' \
+            \) \
+            -exec cp -L {} app/src/main/assets/piper/lib/ \; \
+            || true
+
+          # ========================================================
+          # COPY ESPEAK DATA
+          # ========================================================
+
+          if [ -d "/tmp/piper-extract/usr/share/espeak-ng-data" ]; then
+
+            cp -a \
+              /tmp/piper-extract/usr/share/espeak-ng-data/. \
+              app/src/main/assets/piper/espeak-ng-data/
+
+          fi
+
+          if [ -d "/tmp/piper-extract/data/data/com.termux/files/usr/share/espeak-ng-data" ]; then
+
+            cp -a \
+              /tmp/piper-extract/data/data/com.termux/files/usr/share/espeak-ng-data/. \
+              app/src/main/assets/piper/espeak-ng-data/
+
+          fi
+
+          # Search for espeak-ng-data anywhere else in package.
+          if [ ! -f "app/src/main/assets/piper/espeak-ng-data/phonindex" ]; then
+
+            espeak_dir=$(find /tmp/piper-extract \
+              -type d \
+              -name 'espeak-ng-data' \
+              | head -n 1 || true)
+
+            if [ -n "$espeak_dir" ]; then
+
+              cp -a \
+                "$espeak_dir/." \
+                app/src/main/assets/piper/espeak-ng-data/
+
+            fi
+
+          fi
+
+          # ========================================================
+          # VERIFY
+          # ========================================================
+
+          echo ""
+          echo "=============================="
+          echo "FINAL PIPER FILES"
+          echo "=============================="
+
+          find app/src/main/assets/piper -type f | sort
+
+          echo ""
+          echo "Piper binary:"
+
+          ls -lh \
+            app/src/main/assets/piper/bin/piper
+
+          test -x \
+            app/src/main/assets/piper/bin/piper
+
+          # espeak directory must exist
+          test -d \
+            app/src/main/assets/piper/espeak-ng-data
+
+      # ============================================================
+      # VERIFY APP ASSETS
+      # ============================================================
 
       - name: Validate bundled assets
+        shell: bash
         run: |
+          set -euxo pipefail
+
           test -f app/src/main/assets/quotes.txt
-          test -f app/src/main/assets/font.ttf || (echo "Missing font.ttf. Add your original font.ttf to app/src/main/assets/"; exit 1)
-          test -f app/src/main/assets/bg.mp3 || (echo "Missing bg.mp3. Add your original bg.mp3 to app/src/main/assets/"; exit 1)
+
+          test -f app/src/main/assets/font.ttf || {
+            echo "ERROR: font.ttf is missing"
+            exit 1
+          }
+
+          test -f app/src/main/assets/bg.mp3 || {
+            echo "ERROR: bg.mp3 is missing"
+            exit 1
+          }
+
+          echo "All bundled assets are present."
+
+      # ============================================================
+      # BUILD APK
+      # ============================================================
 
       - name: Build debug APK
+        shell: bash
         run: |
+          set -euxo pipefail
+
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+
+          ./gradlew \
+            assembleDebug \
+            --stacktrace \
+            --no-daemon
+
+      # ============================================================
+      # UPLOAD APK
+      # ============================================================
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: BibleVerseVideoGenerator-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
