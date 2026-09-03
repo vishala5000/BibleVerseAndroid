@@ -1,67 +1,49 @@
-name: Build APK
+name: Build Bible Verse Android APK
 
 on:
   workflow_dispatch:
 
-  push:
-    branches:
-      - main
-
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      - name: Set up JDK 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-
-      - name: Install Android SDK / NDK / CMake
-        shell: bash
+      - name: Install Android tools
         run: |
-
-          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager \
+            "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "ndk;27.2.12479018" \
+            "ndk;28.0.13004108" \
             "cmake;3.31.6"
 
-
-      - name: Download Piper source and ONNX Runtime
+      - name: Prepare Piper and ONNX Runtime
         shell: bash
         run: |
-
           set -euxo pipefail
 
           PIPER_VERSION="v1.4.2"
           ORT_VERSION="1.22.0"
-
           CPP="app/src/main/cpp"
 
           rm -rf "$CPP/piper"
           rm -rf "$CPP/onnxruntime"
 
           mkdir -p "$CPP"
-
 
           echo "================================"
           echo "CLONING PIPER"
@@ -74,20 +56,31 @@ jobs:
             https://github.com/OHF-Voice/piper1-gpl.git \
             "$CPP/piper"
 
+          test -f "$CPP/piper/libpiper/CMakeLists.txt"
+
+          echo "Piper source downloaded."
 
           echo "================================"
           echo "DOWNLOADING ANDROID ONNX RUNTIME"
           echo "================================"
 
+          rm -rf /tmp/ort
           mkdir -p /tmp/ort
 
           curl \
             -L \
             --fail \
-            --retry 3 \
+            --retry 5 \
+            --retry-delay 2 \
             -o /tmp/ort/onnxruntime.aar \
             "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar"
 
+          test -s /tmp/ort/onnxruntime.aar
+
+          echo "AAR downloaded:"
+          ls -lh /tmp/ort/onnxruntime.aar
+
+          mkdir -p "$CPP/onnxruntime"
 
           unzip \
             -q \
@@ -95,238 +88,76 @@ jobs:
             /tmp/ort/onnxruntime.aar \
             -d "$CPP/onnxruntime"
 
+          echo "================================"
+          echo "CHECKING ONNX RUNTIME CONTENT"
+          echo "================================"
+
+          find "$CPP/onnxruntime" \
+            -maxdepth 5 \
+            -type f \
+            -print \
+            | sort
+
+          test -f \
+            "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
+
+          test -f \
+            "$CPP/onnxruntime/jni/arm64-v8a/libonnxruntime.so"
 
           mkdir -p \
             "$CPP/onnxruntime/lib"
-
 
           cp \
             "$CPP/onnxruntime/jni/arm64-v8a/libonnxruntime.so" \
             "$CPP/onnxruntime/lib/libonnxruntime.so"
 
-
-          test -f \
-            "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
-
-
           test -f \
             "$CPP/onnxruntime/lib/libonnxruntime.so"
 
-
-          echo "ONNX Runtime prepared."
-
-
-      - name: Build Piper native library
-        shell: bash
-        run: |
-
-          set -euxo pipefail
-
-          CPP="$GITHUB_WORKSPACE/app/src/main/cpp"
-
-          NDK="$ANDROID_NDK_ROOT"
-
-
-          rm -rf \
-            /tmp/piper-native-build
-
-
           echo "================================"
-          echo "CONFIGURING PIPER"
-          echo "================================"
-
-
-          cmake \
-            -S "$CPP/piper/libpiper" \
-            -B /tmp/piper-native-build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DONNXRUNTIME_DIR="$CPP/onnxruntime" \
-            -DPIPER_BUILD_TESTS=OFF
-
-
-          echo "================================"
-          echo "BUILDING PIPER"
-          echo "================================"
-
-
-          cmake \
-            --build /tmp/piper-native-build \
-            --config Release \
-            --parallel 2
-
-
-          echo "================================"
-          echo "CHECKING PIPER LIBRARY"
-          echo "================================"
-
-
-          find \
-            /tmp/piper-native-build \
-            -name "libpiper.so" \
-            -print
-
-
-          PIPER_SO=$(find \
-            /tmp/piper-native-build \
-            -name "libpiper.so" \
-            | head -n 1)
-
-
-          test -n "$PIPER_SO"
-
-
-          echo "Piper library:"
-          echo "$PIPER_SO"
-
-
-          mkdir -p \
-            "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
-
-
-          cp \
-            "$PIPER_SO" \
-            "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libpiper.so"
-
-
-          cp \
-            "$CPP/onnxruntime/lib/libonnxruntime.so" \
-            "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libonnxruntime.so"
-
-
-      - name: Collect eSpeak NG data
-        shell: bash
-        run: |
-
-          set -euxo pipefail
-
-          DATA_DIR=$(find \
-            /tmp/piper-native-build \
-            -type d \
-            -name "espeak-ng-data" \
-            | head -n 1)
-
-
-          if [ -z "$DATA_DIR" ]; then
-
-            echo "ERROR: espeak-ng-data was not found."
-
-            find \
-              /tmp/piper-native-build \
-              -maxdepth 5 \
-              -type d \
-              | sort
-
-            exit 1
-
-          fi
-
-
-          echo "eSpeak data:"
-          echo "$DATA_DIR"
-
-
-          rm -rf \
-            app/src/main/assets/piper/espeak-ng-data
-
-
-          mkdir -p \
-            app/src/main/assets/piper/espeak-ng-data
-
-
-          cp -a \
-            "$DATA_DIR/." \
-            app/src/main/assets/piper/espeak-ng-data/
-
-
-          test -f \
-            app/src/main/assets/piper/espeak-ng-data/phonindex
-
-
-      - name: Validate project
-        shell: bash
-        run: |
-
-          set -euxo pipefail
-
-          test -f \
-            app/src/main/assets/quotes.txt
-
-          test -f \
-            app/src/main/assets/font.ttf
-
-          test -f \
-            app/src/main/assets/bg.mp3
-
-          test -f \
-            app/src/main/assets/piper/espeak-ng-data/phonindex
-
-          test -f \
-            app/src/main/jniLibs/arm64-v8a/libpiper.so
-
-          test -f \
-            app/src/main/jniLibs/arm64-v8a/libonnxruntime.so
-
-
-          echo ""
-          echo "================================"
-          echo "NATIVE LIBRARIES"
+          echo "ONNX RUNTIME READY"
           echo "================================"
 
           ls -lh \
-            app/src/main/jniLibs/arm64-v8a/
+            "$CPP/onnxruntime/include/onnxruntime_cxx_api.h"
 
+          ls -lh \
+            "$CPP/onnxruntime/lib/libonnxruntime.so"
 
-          echo ""
-          echo "================================"
-          echo "ASSETS"
-          echo "================================"
-
-          find \
-            app/src/main/assets \
-            -maxdepth 3 \
-            -type f \
-            -printf "%p %s bytes\n" \
-            | sort
-
-
-      - name: Build debug APK
+      - name: Build Android APK
         shell: bash
         run: |
-
           set -euxo pipefail
 
-          chmod +x gradlew
+          chmod +x ./gradlew
 
           ./gradlew \
-            assembleDebug \
+            --no-daemon \
             --stacktrace \
-            --no-daemon
+            assembleRelease
 
-
-      - name: Verify APK
+      - name: Check APK
         shell: bash
         run: |
-
           set -euxo pipefail
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          echo "================================"
+          echo "APK FILES"
+          echo "================================"
 
-          test -f "$APK"
+          find app/build/outputs/apk \
+            -type f \
+            -name "*.apk" \
+            -print
 
-          ls -lh "$APK"
-
+          test -n "$(find app/build/outputs/apk \
+            -type f \
+            -name "*.apk" \
+            -print -quit)"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
-
         with:
-
-          name: BibleVerseVideoGenerator-debug
-
-          path: app/build/outputs/apk/debug/app-debug.apk
-
+          name: BibleVerse-APK
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
